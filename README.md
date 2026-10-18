@@ -9,7 +9,7 @@ DirectDraw / Direct3D 3 game) playable on a modern Linux desktop under Wine, in 
 
 **You need your own copy of the game** (the original CD / an image of it). Nothing of the game, and no Microsoft or Wine
 binaries, are included in this repository. The patched `ddraw.dll` is built *on your machine* from the source of the
-Wine you have installed.
+Wine you have installed. It was tested against the source from myabandonware.com.
 
 > **Status / compatibility.** Developed and tested on **Fedora 44, wine-core 11.0 (staging, wow64), Mesa/RADV (AMD),
 > KDE Plasma 6 on Wayland**. The Wine fixes are source patches for `dlls/ddraw` (`patches/`, written against `wine-11.0`);
