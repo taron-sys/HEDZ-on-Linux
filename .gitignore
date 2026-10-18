@@ -1,0 +1,7 @@
+hedz.log
+__pycache__/
+*.so
+*.dll
+*.img
+*.iso
+*.bin
