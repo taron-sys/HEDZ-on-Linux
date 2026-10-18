@@ -1,0 +1,75 @@
+Subject: [PATCH] ddraw: Perform colour and depth fills of 16 bpp system memory surfaces on the CPU.
+
+Applications that draw into system memory surfaces in software, through pointers
+they keep, expect Blt() fills to be visible in the surface memory immediately.
+A depth fill of a system memory depth buffer was executed on a GPU side copy
+only, so a software z-buffer was never cleared.
+---
+diff --git a/dlls/ddraw/surface.c b/dlls/ddraw/surface.c
+index f2a5b2e..a0b6c95 100644
+--- a/dlls/ddraw/surface.c
++++ b/dlls/ddraw/surface.c
+@@ -1568,6 +1568,53 @@ void ddraw_surface_mark_sysmem_dirty(struct ddraw_surface *surface, DWORD caps_m
+     wined3d_mutex_unlock();
+ }
+ 
++/* Fill a rectangle of a 16 bpp system memory surface directly in its memory.
++ * Applications that draw into such surfaces in software (and which keep
++ * pointers into the surface memory) rely on Blt() colour and depth fills
++ * being visible there immediately; a clear that is executed on a GPU side
++ * copy of the surface is not. In particular a system memory depth buffer
++ * would otherwise be "cleared" on the GPU only. Returns FALSE if the fill
++ * wasn't handled and the caller should fall back to wined3d. */
++static BOOL ddraw_surface_cpu_fill(struct ddraw_surface *surface, const RECT *rect, DWORD colour)
++{
++    const DDSURFACEDESC2 *desc = &surface->surface_desc;
++    struct wined3d_resource *resource;
++    struct wined3d_map_desc map_desc;
++    unsigned int x, y, width, height;
++    struct wined3d_box box;
++    uint16_t *row;
++
++    if (!(desc->ddsCaps.dwCaps & DDSCAPS_SYSTEMMEMORY) || desc->ddpfPixelFormat.dwRGBBitCount != 16)
++        return FALSE;
++
++    wined3d_box_set(&box, 0, 0, desc->dwWidth, desc->dwHeight, 0, 1);
++    if (rect)
++    {
++        box.left = max(rect->left, 0);
++        box.top = max(rect->top, 0);
++        box.right = min(rect->right, desc->dwWidth);
++        box.bottom = min(rect->bottom, desc->dwHeight);
++        if (box.left >= box.right || box.top >= box.bottom)
++            return TRUE;
++    }
++    width = box.right - box.left;
++    height = box.bottom - box.top;
++
++    resource = wined3d_texture_get_resource(ddraw_surface_get_default_texture(surface, DDRAW_SURFACE_RW));
++    if (FAILED(wined3d_resource_map(resource, surface->sub_resource_idx, &map_desc, &box, WINED3D_MAP_WRITE)))
++        return FALSE;
++
++    for (y = 0; y < height; ++y)
++    {
++        row = (uint16_t *)((BYTE *)map_desc.data + y * map_desc.row_pitch);
++        for (x = 0; x < width; ++x)
++            row[x] = colour;
++    }
++
++    wined3d_resource_unmap(resource, surface->sub_resource_idx);
++    return TRUE;
++}
++
+ static HRESULT ddraw_surface_blt(struct ddraw_surface *dst_surface, const RECT *dst_rect,
+         struct ddraw_surface *src_surface, const RECT *src_rect, DWORD flags, DWORD fill_colour,
+         const struct wined3d_blt_fx *fx, enum wined3d_texture_filter_type filter)
+@@ -1576,6 +1623,9 @@ static HRESULT ddraw_surface_blt(struct ddraw_surface *dst_surface, const RECT *
+     struct wined3d_color colour;
+     DWORD wined3d_flags;
+ 
++    if ((flags & (DDBLT_COLORFILL | DDBLT_DEPTHFILL)) && ddraw_surface_cpu_fill(dst_surface, dst_rect, fill_colour))
++        return DD_OK;
++
+     if (flags & DDBLT_COLORFILL)
+     {
+         unsigned int location_flags = dst_rect ? DDRAW_SURFACE_RW : DDRAW_SURFACE_WRITE;

@@ -12,7 +12,9 @@ Patches (VA; image base 0x400000, .text file offset 0x400 = VA 0x401000):
     pages are zero-filled, so the stray vertex reads as 0.0 instead of crashing. (Verified in game: the medic can
     drain his own HP to 0 without a crash.)
 """
-import os, shutil, stat, struct, sys
+import hashlib, os, shutil, stat, struct, sys
+
+ORIG_SHA256 = "1a3034530112d5af9475416d698c52c45ebfa008a4ea3f681fb300932b8fcf7c"      # retail Hedz.exe, before patching
 
 default = os.path.join(os.environ.get("HEDZ_CD", os.path.expanduser("~/.wine-hedz-cd")), "Hedz", "Hedz.exe")
 path = sys.argv[1] if len(sys.argv) > 1 else default
@@ -21,6 +23,12 @@ path = sys.argv[1] if len(sys.argv) > 1 else default
 def off(va):
     return va - 0x401000 + 0x400
 
+
+# the pristine exe is Hedz.exe.orig once we have patched; before that it is Hedz.exe itself
+orig = path + ".orig" if os.path.exists(path + ".orig") else path
+got = hashlib.sha256(open(orig, "rb").read()).hexdigest()
+if got != ORIG_SHA256:
+    sys.exit(f"{orig} is not the retail Hedz.exe these patches were written for (sha256 {got}, expected {ORIG_SHA256})")
 
 d = bytearray(open(path, "rb").read())
 pe = struct.unpack_from("<I", d, 0x3c)[0]

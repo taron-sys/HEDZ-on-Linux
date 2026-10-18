@@ -1,0 +1,104 @@
+Subject: [PATCH] ddraw: Refresh the execute buffer vertices in IDirect3DDevice::Execute().
+
+Applications may modify the vertices in an execute buffer in place and call
+Execute() again without calling SetExecuteData(). Copy the vertices into the
+source vertex buffer on every Execute().
+---
+diff --git a/dlls/ddraw/executebuffer.c b/dlls/ddraw/executebuffer.c
+index 8c3cdaf..8cdfddb 100644
+--- a/dlls/ddraw/executebuffer.c
++++ b/dlls/ddraw/executebuffer.c
+@@ -45,6 +45,9 @@ static void _dump_D3DEXECUTEBUFFERDESC(const D3DEXECUTEBUFFERDESC *lpDesc) {
+     TRACE("lpData       : %p\n", lpDesc->lpData);
+ }
+ 
++static HRESULT d3d_execute_buffer_upload_vertices(struct d3d_execute_buffer *buffer,
++        const D3DEXECUTEDATA *data);
++
+ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d_device *device)
+ {
+     DWORD is = buffer->data.dwInstructionOffset;
+@@ -58,6 +61,12 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+     if (TRACE_ON(ddraw))
+         _dump_executedata(&(buffer->data));
+ 
++    /* Applications are free to modify the vertices in the buffer between
++     * Execute() calls without calling SetExecuteData() again, so refresh
++     * the copy that wined3d reads from. */
++    if (buffer->src_vertex_buffer && FAILED(hr = d3d_execute_buffer_upload_vertices(buffer, &buffer->data)))
++        return hr;
++
+     for (;;)
+     {
+         D3DINSTRUCTION *current = (D3DINSTRUCTION *)instr;
+@@ -562,6 +571,34 @@ static HRESULT WINAPI d3d_execute_buffer_Unlock(IDirect3DExecuteBuffer *iface)
+     return D3D_OK;
+ }
+ 
++/* Copy the vertices described by "data" from the application's buffer into
++ * the source vertex buffer, at the current source vertex position. */
++static HRESULT d3d_execute_buffer_upload_vertices(struct d3d_execute_buffer *buffer, const D3DEXECUTEDATA *data)
++{
++    DWORD buf_size = buffer->desc.dwBufferSize, copy_size;
++    struct wined3d_box box = {0, 0, 0, 1, 0, 1};
++    struct wined3d_map_desc map_desc;
++    HRESULT hr;
++
++    if (!data->dwVertexCount || (buf_size && data->dwVertexOffset >= buf_size))
++        return D3D_OK;
++
++    box.left = buffer->src_vertex_pos * sizeof(D3DVERTEX);
++    box.right = box.left + data->dwVertexCount * sizeof(D3DVERTEX);
++    if (FAILED(hr = wined3d_resource_map(wined3d_buffer_get_resource(buffer->src_vertex_buffer),
++            0, &map_desc, &box, WINED3D_MAP_WRITE)))
++        return hr;
++
++    copy_size = data->dwVertexCount * sizeof(D3DVERTEX);
++    if (buf_size)
++        copy_size = min(copy_size, buf_size - data->dwVertexOffset);
++
++    memcpy(map_desc.data, ((BYTE *)buffer->desc.lpData) + data->dwVertexOffset, copy_size);
++
++    wined3d_resource_unmap(wined3d_buffer_get_resource(buffer->src_vertex_buffer), 0);
++    return D3D_OK;
++}
++
+ /*****************************************************************************
+  * IDirect3DExecuteBuffer::SetExecuteData
+  *
+@@ -579,10 +616,7 @@ static HRESULT WINAPI d3d_execute_buffer_Unlock(IDirect3DExecuteBuffer *iface)
+ static HRESULT WINAPI d3d_execute_buffer_SetExecuteData(IDirect3DExecuteBuffer *iface, D3DEXECUTEDATA *data)
+ {
+     struct d3d_execute_buffer *buffer = impl_from_IDirect3DExecuteBuffer(iface);
+-    struct wined3d_map_desc map_desc;
+-    struct wined3d_box box = {0, 0, 0, 1, 0, 1};
+     HRESULT hr;
+-    DWORD buf_size = buffer->desc.dwBufferSize, copy_size;
+ 
+     TRACE("iface %p, data %p.\n", iface, data);
+ 
+@@ -638,22 +672,8 @@ static HRESULT WINAPI d3d_execute_buffer_SetExecuteData(IDirect3DExecuteBuffer *
+         buffer->src_vertex_pos = 0;
+     }
+ 
+-    if (data->dwVertexCount && (!buf_size || data->dwVertexOffset < buf_size))
+-    {
+-        box.left = buffer->src_vertex_pos * sizeof(D3DVERTEX);
+-        box.right = box.left + data->dwVertexCount * sizeof(D3DVERTEX);
+-        if (FAILED(hr = wined3d_resource_map(wined3d_buffer_get_resource(buffer->src_vertex_buffer),
+-                0, &map_desc, &box, WINED3D_MAP_WRITE)))
+-            return hr;
+-
+-        copy_size = data->dwVertexCount * sizeof(D3DVERTEX);
+-        if (buf_size)
+-            copy_size = min(copy_size, buf_size - data->dwVertexOffset);
+-
+-        memcpy(map_desc.data, ((BYTE *)buffer->desc.lpData) + data->dwVertexOffset, copy_size);
+-
+-        wined3d_resource_unmap(wined3d_buffer_get_resource(buffer->src_vertex_buffer), 0);
+-    }
++    if (FAILED(hr = d3d_execute_buffer_upload_vertices(buffer, data)))
++        return hr;
+ 
+     memcpy(&buffer->data, data, data->dwSize);
+ 

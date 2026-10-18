@@ -1,0 +1,50 @@
+Subject: [PATCH] ddraw: Don't assert on an invalid viewport interface pointer.
+
+Applications may release their last reference to a viewport and then still pass
+the dangling pointer to IDirect3DDevice::DeleteViewport() (H.E.D.Z. does).
+Return NULL from the unsafe_impl_from_IDirect3DViewport*() helpers instead of
+asserting; all callers already handle NULL.
+---
+diff --git a/dlls/ddraw/viewport.c b/dlls/ddraw/viewport.c
+index 707b0f5..9d60063 100644
+--- a/dlls/ddraw/viewport.c
++++ b/dlls/ddraw/viewport.c
+@@ -1209,7 +1209,11 @@ static const struct IDirect3DViewport3Vtbl d3d_viewport_vtbl =
+ struct d3d_viewport *unsafe_impl_from_IDirect3DViewport3(IDirect3DViewport3 *iface)
+ {
+     if (!iface) return NULL;
+-    assert(iface->lpVtbl == &d3d_viewport_vtbl);
++    if (iface->lpVtbl != &d3d_viewport_vtbl)
++    {
++        WARN("Invalid viewport interface %p.\n", iface);
++        return NULL;
++    }
+     return CONTAINING_RECORD(iface, struct d3d_viewport, IDirect3DViewport3_iface);
+ }
+ 
+@@ -1217,7 +1221,11 @@ struct d3d_viewport *unsafe_impl_from_IDirect3DViewport2(IDirect3DViewport2 *ifa
+ {
+     /* IDirect3DViewport and IDirect3DViewport3 use the same iface. */
+     if (!iface) return NULL;
+-    assert(iface->lpVtbl == (IDirect3DViewport2Vtbl *)&d3d_viewport_vtbl);
++    if (iface->lpVtbl != (IDirect3DViewport2Vtbl *)&d3d_viewport_vtbl)
++    {
++        WARN("Invalid viewport interface %p.\n", iface);
++        return NULL;
++    }
+     return CONTAINING_RECORD(iface, struct d3d_viewport, IDirect3DViewport3_iface);
+ }
+ 
+@@ -1225,7 +1233,11 @@ struct d3d_viewport *unsafe_impl_from_IDirect3DViewport(IDirect3DViewport *iface
+ {
+     /* IDirect3DViewport and IDirect3DViewport3 use the same iface. */
+     if (!iface) return NULL;
+-    assert(iface->lpVtbl == (IDirect3DViewportVtbl *)&d3d_viewport_vtbl);
++    if (iface->lpVtbl != (IDirect3DViewportVtbl *)&d3d_viewport_vtbl)
++    {
++        WARN("Invalid viewport interface %p.\n", iface);
++        return NULL;
++    }
+     return CONTAINING_RECORD(iface, struct d3d_viewport, IDirect3DViewport3_iface);
+ }
+ 

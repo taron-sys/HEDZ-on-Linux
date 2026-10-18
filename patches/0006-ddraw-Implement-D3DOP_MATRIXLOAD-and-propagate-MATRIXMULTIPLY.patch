@@ -1,0 +1,109 @@
+Subject: [PATCH] ddraw: Implement D3DOP_MATRIXLOAD and propagate D3DOP_MATRIXMULTIPLY results.
+
+MATRIXLOAD was ignored, and MATRIXMULTIPLY only updated the matrix behind the
+handle but never the wined3d WORLD/VIEW/PROJECTION transform when the handle is
+the active one. Factor the propagation out of IDirect3DDevice::SetMatrix() and
+call it from both opcodes.
+---
+diff --git a/dlls/ddraw/ddraw_private.h b/dlls/ddraw/ddraw_private.h
+index bd1df8e..2f8d40f 100644
+--- a/dlls/ddraw/ddraw_private.h
++++ b/dlls/ddraw/ddraw_private.h
+@@ -713,6 +713,8 @@ static inline struct wined3d_texture *ddraw_surface_get_any_texture(struct ddraw
+ 
+ void d3d_device_sync_surfaces(struct d3d_device *device);
+ void d3d_device_apply_state(struct d3d_device *device, BOOL clear_state);
++void d3d_device_matrix_changed(struct d3d_device *device, D3DMATRIXHANDLE handle,
++        const struct wined3d_matrix *matrix);
+ 
+ /* Used for generic dumping */
+ struct flag_info
+diff --git a/dlls/ddraw/device.c b/dlls/ddraw/device.c
+index 6c2fdfb..b32d839 100644
+--- a/dlls/ddraw/device.c
++++ b/dlls/ddraw/device.c
+@@ -1346,6 +1346,21 @@ static HRESULT WINAPI d3d_device1_CreateMatrix(IDirect3DDevice *iface, D3DMATRIX
+     return D3D_OK;
+ }
+ 
++/* Propagate a change of the matrix behind "handle" to wined3d if the handle is
++ * currently used as the world, view or projection transform. Called with the
++ * wined3d mutex held. */
++void d3d_device_matrix_changed(struct d3d_device *device, D3DMATRIXHANDLE handle, const struct wined3d_matrix *matrix)
++{
++    if (handle == device->world)
++        wined3d_stateblock_set_transform(device->state, WINED3D_TS_WORLD_MATRIX(0), matrix);
++
++    if (handle == device->view)
++        wined3d_stateblock_set_transform(device->state, WINED3D_TS_VIEW, matrix);
++
++    if (handle == device->proj)
++        wined3d_stateblock_set_transform(device->state, WINED3D_TS_PROJECTION, matrix);
++}
++
+ /*****************************************************************************
+  * IDirect3DDevice::SetMatrix
+  *
+@@ -1389,18 +1404,7 @@ static HRESULT WINAPI d3d_device1_SetMatrix(IDirect3DDevice *iface,
+         dump_D3DMATRIX(matrix);
+ 
+     *m = *matrix;
+-
+-    if (matrix_handle == device->world)
+-        wined3d_stateblock_set_transform(device->state,
+-                WINED3D_TS_WORLD_MATRIX(0), (struct wined3d_matrix *)matrix);
+-
+-    if (matrix_handle == device->view)
+-        wined3d_stateblock_set_transform(device->state,
+-                WINED3D_TS_VIEW, (struct wined3d_matrix *)matrix);
+-
+-    if (matrix_handle == device->proj)
+-        wined3d_stateblock_set_transform(device->state,
+-                WINED3D_TS_PROJECTION, (struct wined3d_matrix *)matrix);
++    d3d_device_matrix_changed(device, matrix_handle, (struct wined3d_matrix *)matrix);
+ 
+     wined3d_mutex_unlock();
+ 
+diff --git a/dlls/ddraw/executebuffer.c b/dlls/ddraw/executebuffer.c
+index 8cdfddb..2add9a2 100644
+--- a/dlls/ddraw/executebuffer.c
++++ b/dlls/ddraw/executebuffer.c
+@@ -205,8 +205,28 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+             }
+ 
+             case D3DOP_MATRIXLOAD:
+-                WARN("MATRIXLOAD-s     (%u)\n", count);
+-                instr += count * size;
++                TRACE("MATRIXLOAD       (%d)\n", count);
++                for (i = 0; i < count; ++i)
++                {
++                    D3DMATRIXLOAD *ci = (D3DMATRIXLOAD *)instr;
++                    struct wined3d_matrix *dst, *src;
++
++                    dst = ddraw_get_object(NULL, ci->hDestMatrix - 1, DDRAW_HANDLE_MATRIX);
++                    src = ddraw_get_object(NULL, ci->hSrcMatrix - 1, DDRAW_HANDLE_MATRIX);
++
++                    if (!dst || !src)
++                    {
++                        ERR("Invalid matrix handle (dst %#lx -> %p, src %#lx -> %p).\n",
++                                ci->hDestMatrix, dst, ci->hSrcMatrix, src);
++                    }
++                    else
++                    {
++                        *dst = *src;
++                        d3d_device_matrix_changed(device, ci->hDestMatrix, dst);
++                    }
++
++                    instr += size;
++                }
+                 break;
+ 
+             case D3DOP_MATRIXMULTIPLY:
+@@ -229,6 +249,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+                     {
+                         TRACE("dst %p, src1 %p, src2 %p.\n", a, b, c);
+                         multiply_matrix(a, c, b);
++                        d3d_device_matrix_changed(device, ci->hDestMatrix, a);
+                     }
+ 
+                     instr += size;

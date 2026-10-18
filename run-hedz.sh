@@ -7,8 +7,6 @@
 #   HEDZ_WINDOWED=1      gamescope in a window instead of fullscreen
 #   HEDZ_GSARGS="..."    extra gamescope arguments
 #   HEDZ_GSWSI=1         keep gamescope's Vulkan WSI layer loaded into the game (disabled by default)
-#   HEDZ_DDRAW=min|full  ddraw patch set: full = all fixes (default), min = only the viewport-assert fix
-#   HEDZ_WINED3D=stock   use the unpatched wined3d (default: patched)
 #   HEDZ_LOG=1|2|3       write a Wine log to hedz.log next to this script: 1 = errors/ddraw, 2 = + process/exceptions,
 #                        3 = + window/X11 tracing (big)
 #   HEDZ_BT=1            also preload the X-error shim without gamescope (it is always used under gamescope)
@@ -17,7 +15,11 @@ HERE="$(dirname "$(readlink -f "$0")")"                      # before any cd: $0
 export WINEPREFIX="${HEDZ_PREFIX:-$HOME/.wine-hedz}"
 CD="${HEDZ_CD:-$HOME/.wine-hedz-cd}"
 export WINEDEBUG=-all
-[ -f "$CD/Hedz/Hedz.exe" ] && [ -f "$WINEPREFIX/patches/ddraw.full.dll" ] || { echo "Not installed: run ./install.sh <disc image> first." >&2; exit 1; }
+[ -f "$CD/Hedz/Hedz.exe" ] && [ -f "$WINEPREFIX/patches/ddraw.dll" ] || { echo "Not installed: run ./install.sh <disc image> first." >&2; exit 1; }
+# ddraw.dll is built against the source of one Wine version and talks to that version's wined3d: rebuild after a Wine update.
+BUILT=$(cat "$WINEPREFIX/patches/ddraw.dll.version" 2>/dev/null)
+HAVE=$(wine --version 2>/dev/null | sed -n 's/^wine-\([0-9.]*[0-9]\).*/\1/p')
+[ -z "$BUILT" ] || [ "$BUILT" = "$HAVE" ] || { echo "The patched ddraw.dll was built for wine-$BUILT but wine-$HAVE is installed: run ./build-ddraw.sh" >&2; exit 1; }
 
 # A wineserver left over from an earlier run keeps that run's display and X connection; the game would then attach to a
 # desktop that does not exist on gamescope's X server (black window, BadWindow errors). Start from a clean session.
@@ -30,9 +32,10 @@ if [ -n "$HEDZ_LOG" ]; then
   exec > >(grep -a --line-buffered -v "radv\|hid:\|wineusb\|ATTENTION" > "$HERE/hedz.log") 2>&1
 fi
 
-# Patched DLLs (built by install.sh into $WINEPREFIX/patches) are copied over the prefix's own ddraw/wined3d.
-cp "$WINEPREFIX/patches/ddraw.${HEDZ_DDRAW:-full}.dll" "$WINEPREFIX/drive_c/windows/syswow64/ddraw.dll"
-cp "$WINEPREFIX/patches/wined3d.${HEDZ_WINED3D:-patched}.dll" "$WINEPREFIX/drive_c/windows/syswow64/wined3d.dll"
+# The patched ddraw.dll (built by build-ddraw.sh into $WINEPREFIX/patches) is copied over the prefix's own one.
+cp "$WINEPREFIX/patches/ddraw.dll" "$WINEPREFIX/drive_c/windows/syswow64/ddraw.dll"
+# Older installs also had a patched wined3d.dll copied into the prefix: put Wine's own back.
+[ -f "$WINEPREFIX/patches/wined3d.stock.dll" ] && cp "$WINEPREFIX/patches/wined3d.stock.dll" "$WINEPREFIX/drive_c/windows/syswow64/wined3d.dll"
 
 # X-error shim (tools/xerrbt.so): ignores the fatal BadWindow error Wine can get from gamescope's Xwayland. gamescope strips
 # LD_PRELOAD from its child, so it is injected with `env` right before wine.

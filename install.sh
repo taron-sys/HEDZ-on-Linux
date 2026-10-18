@@ -10,7 +10,7 @@ CD="${HEDZ_CD:-$HOME/.wine-hedz-cd}"
 SRC="$1"
 die() { echo "error: $*" >&2; exit 1; }
 [ -n "$SRC" ] && [ -e "$SRC" ] || die "usage: $0 <hedz.cue|hedz.img|hedz.iso|extracted-disc-folder>"
-for c in wine wineserver python3 as ld objcopy; do command -v $c >/dev/null || die "missing tool: $c"; done
+for c in wine wineserver python3; do command -v $c >/dev/null || die "missing tool: $c"; done
 [ -d "$PREFIX" ] && echo "note: $PREFIX already exists, reusing it"
 
 echo "== 1/6  extracting the disc to $CD"
@@ -38,14 +38,13 @@ wineboot -u >/dev/null 2>&1 || true
 ln -sfn "$CD" "$PREFIX/dosdevices/d:"
 wine reg add 'HKLM\Software\Wine\Drives' /v 'd:' /t REG_SZ /d cdrom /f >/dev/null
 wine reg add 'HKCU\Software\Wine\DllOverrides' /v ddraw /t REG_SZ /d native,builtin /f >/dev/null
-wine reg add 'HKCU\Software\Wine\DllOverrides' /v wined3d /t REG_SZ /d native,builtin /f >/dev/null
 # The game refuses to start unless the (Windows 9x style) display key says 16 bit colour. Wine never reads it itself.
 wine reg add 'HKLM\Config\0001\Display\Settings' /v BitsPerPixel /t REG_SZ /d 16 /f >/dev/null
 wine reg add 'HKLM\Config\0001\Display\Settings' /v Resolution /t REG_SZ /d 1920,1080 /f >/dev/null
 wineserver -k 2>/dev/null || true; sleep 1
 
-echo "== 5/6  building the patched ddraw.dll / wined3d.dll from your Wine"
-python3 "$HERE/build_patches.py" "$PREFIX/patches"
+echo "== 5/6  building the patched ddraw.dll from the source of your Wine (needs podman or docker)"
+HEDZ_PREFIX="$PREFIX" "$HERE/build-ddraw.sh"
 
 echo "== 6/6  building the X-error shim (optional)"
 if command -v gcc >/dev/null && gcc -shared -fPIC -O1 -o "$HERE/tools/xerrbt.so" "$HERE/tools/xerrbt.c" -ldl 2>/dev/null; then

@@ -1,0 +1,6 @@
+# Toolchain used by build-ddraw.sh to cross-build Wine's ddraw.dll (i686 PE) without installing anything on the host.
+FROM registry.fedoraproject.org/fedora:latest
+RUN dnf -y install --setopt=install_weak_deps=False gcc make flex bison perl-interpreter \
+        mingw32-gcc mingw32-crt mingw32-headers mingw32-binutils \
+        mingw64-gcc mingw64-crt mingw64-headers mingw64-binutils \
+    && dnf clean all

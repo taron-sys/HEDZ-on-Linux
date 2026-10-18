@@ -1,0 +1,23 @@
+Subject: [PATCH] ddraw: Allow CPU access to textures that are not render targets or depth buffers.
+
+Applications Lock() video memory textures and write to them, and wined3d's CPU
+blitter can only write textures that allow CPU access. Without it uploads fail
+with "Operation requires 0x2 access".
+---
+diff --git a/dlls/ddraw/surface.c b/dlls/ddraw/surface.c
+index e6ed79a..5369b2d 100644
+--- a/dlls/ddraw/surface.c
++++ b/dlls/ddraw/surface.c
+@@ -6331,6 +6331,12 @@ static HRESULT ddraw_texture_init(struct ddraw_texture *texture, struct ddraw *d
+             WARN("Failed to create draw texture, hr %#lx.\n", hr);
+     }
+ 
++    /* Applications lock video memory textures and write to them directly, and
++     * wined3d's CPU blitter can only write textures that allow CPU access.
++     * Render targets and depth/stencil buffers need to stay GPU only. */
++    if (!(wined3d_desc.bind_flags & (WINED3D_BIND_RENDER_TARGET | WINED3D_BIND_DEPTH_STENCIL)))
++        wined3d_desc.access |= WINED3D_RESOURCE_ACCESS_CPU;
++
+     /* Some applications assume surfaces will always be mapped at the same
+      * address. Some of those also assume that this address is valid even when
+      * the surface isn't mapped, and that updates done this way will be

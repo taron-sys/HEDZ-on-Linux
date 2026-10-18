@@ -17,17 +17,36 @@ Addresses are virtual addresses; DLL image base `0x10000000`, `Hedz.exe` image b
 - Game settings: `HKLM\Software\Vis Interactive\Hedz` in the **32-bit** view (`ClipPlane, Models, Lighting, ResMode,
   MusicLevel, SoundLevel, Difficulty, FullScreen, …`).
 
-## 2. Patch table (Wine DLLs)
+## 2. Wine patches (`patches/`, source level)
 
-All are binary patches against the stock DLLs:
+Seven patches against `dlls/ddraw` of `wine-11.0`, built into a private `ddraw.dll` by `build-ddraw.sh`; wined3d is stock.
+Tested with the vanilla source built against Fedora's staging runtime. The DLL is copied into the prefix's `syswow64` with
+the `Wine builtin DLL` marker changed (otherwise Wine silently loads its own copy); the prefix has a `ddraw` override
+`native,builtin`. ddraw uses wined3d's internal interface, so the DLL must be rebuilt for each Wine version
+(`run-hedz.sh` checks `patches/ddraw.dll.version`).
+
+| Patch | Symptom | Fix |
+|---|---|---|
+| 0001 viewport | crash on *New Game*: `Assertion failed: iface->lpVtbl == &d3d_viewport_vtbl, viewport.c:1212`: the game Releases its viewport, then calls `DeleteViewport` on it | the three `unsafe_impl_from_IDirect3DViewport*` helpers return NULL (callers already handle it) instead of asserting |
+| 0002 boxes | ~1M× `Box (0,0,0)-(8192,0,0) is invalid`; failed buffer maps | `wined3d_resource_check_box_dimensions` rejects empty y/z ranges, so boxes in `executebuffer.c` / `device.c` start as `{0,0,0,1,0,1}`. This also replaces the old wined3d patch, so wined3d stays stock |
+| 0003 execute vertices | stale / garbled geometry: Wine copies execute-buffer vertices only in `SetExecuteData`; the game rewrites them in place and calls only `Execute` | `d3d_execute_buffer_execute` re-copies the vertices (`d3d_execute_buffer_upload_vertices`, factored out of `SetExecuteData`) before executing |
+| 0004 CPU access | `Operation requires 0x2 access, but texture only has 0xd` on texture uploads | `ddraw_texture_init`: textures without RENDER_TARGET / DEPTH_STENCIL bind get `WINED3D_RESOURCE_ACCESS_CPU`. Not for RT/DS surfaces (crashes) |
+| 0005 dirty sysmem | software-drawn surfaces stay empty: the game Locks a system-memory surface once, keeps the pointer and writes later; Wine keeps serving its cached GPU copy | `ddraw_surface_mark_sysmem_dirty()` (empty map/unmap) before a system-memory or TEXTURE surface is bound with `SetRenderState(TEXTUREHANDLE)` and before a system-memory `Blt`/`BltFast` source is used |
+| 0006 matrices | **3D world missing (black)**: `D3DOP_MATRIXLOAD` ignored; `D3DOP_MATRIXMULTIPLY` updates the handle storage but never the wined3d WORLD/VIEW/PROJ transform | MATRIXLOAD implemented; both opcodes call the new `d3d_device_matrix_changed()` (factored out of `IDirect3DDevice::SetMatrix`) |
+| 0007 CPU fills | **hed and held items missing**, see below | `ddraw_surface_cpu_fill()`: `DDBLT_COLORFILL` and `DDBLT_DEPTHFILL` on 16 bpp system-memory surfaces are written straight into the surface memory |
+
+The old `swap` / `gsd` / `usrmem` experiments and the BltFast CPU copy of the binary build were not ported: the C build
+renders the world, heds and items without them. The binary build is kept in `legacy/` for reference.
+
+## 2b. Legacy binary patches (`legacy/`)
+
+All are binary patches against the stock DLLs of Fedora's wine-core 11.0-3:
 
 - `ddraw.dll` sha256 `ea490bbead63d2929b36e55044e29a06031618d7322978a04e958b5b91c96e71`
 - `wined3d.dll` sha256 `0397d27ec116533e1cb7d1f7aa388c6f054e34db375b127c8c2310de00ef0d53`
 
-`build_patches.py` checks the original bytes before every write. Code caves live in the zero padding at the end of `.text`
-(VA 0x1003d170–0x1003e000), sources in `asm/`, position independent (`call 1f; pop`) because the DLL may be relocated.
-A patched copy must have the string `Wine builtin DLL` changed (done by the script) or Wine silently loads its own copy.
-The prefix has `ddraw`/`wined3d` overrides `native,builtin`, and the launcher copies the patched files into `syswow64`.
+`legacy/build_patches.py` checks the original bytes before every write. Code caves live in the zero padding at the end of `.text`
+(VA 0x1003d170–0x1003e000), sources in `legacy/asm/`, position independent (`call 1f; pop`) because the DLL may be relocated.
 
 | # | Symptom | Cause | Patch |
 |---|---|---|---|
@@ -40,7 +59,7 @@ The prefix has `ddraw`/`wined3d` overrides `native,builtin`, and the launcher co
 | 7 | **3D world missing (black)** | `D3DOP_MATRIXLOAD` ignored; `D3DOP_MATRIXMULTIPLY` updates the handle storage but never the wined3d WORLD/VIEW/PROJ transform | cave 0x1003d700 (`asm/mat.s`): MATRIXLOAD → `IDirect3DDevice::SetMatrix(dev+0xc, hDest, src)` (jump table 0x100465c0, opcode 4); MATRIXMULTIPLY hook at 0x10015ba7 calls `SetMatrix(hDest, dest)` after the multiply. **Decisive for the world** |
 | 8 | **hed and held items missing** | see below | the `Blt` hook also does `DDBLT_COLORFILL` **and `DDBLT_DEPTHFILL`** on system-memory 16 bpp surfaces on the CPU (`cpufill` in `asm/dirty.s`) |
 
-### Why the hed and the held items were missing (patch 8)
+### Why the hed and the held items were missing (patch 8 / 0007)
 
 They are drawn by the game's own *software voxel renderer* into small system-memory surfaces (64×64 sprite textures, 256×256
 in the front end), copied into textures and drawn as large alpha-keyed billboard quads. That renderer owns a software
@@ -49,15 +68,15 @@ z-buffer: a system-memory `DDSCAPS_ZBUFFER` surface. Its clear routine (`sub_4ac
 a GPU-side buffer, so the memory the renderer z-tests against stayed 0 and every voxel was rejected → empty texture →
 transparent quad. How it was found: a debug build recorded, per texture handle bound by `SetRenderState(TEXTUREHANDLE)`,
 how non-empty the surface memory was; hed handles were all zero while world textures were full, so the *source* was empty.
-`dev/dbgbuild.py` builds a DLL with a cave's asm swapped for a debug variant.
+`legacy/dbgbuild.py` builds a DLL with a cave's asm swapped for a debug variant.
 
-### Experimental patches (off by default, `BP_ENABLE=swap,gsd,usrmem`)
+### Experimental binary patches (off by default, `BP_ENABLE=swap,gsd,usrmem`, legacy build only)
 
 Tried while hunting the above and found *not* needed: `swap` (SwapTextureHandles remaps only the table), `gsd`
 (`GetSurfaceDesc` returns `lpSurface` for system-memory textures like the original DirectDraw), `usrmem` (caller-owned memory
 for plain 16 bpp video textures so a Lock pointer stays valid).
 
-### ddraw internals (this build)
+### ddraw internals (Fedora's wine-core 11.0-3 binary; for the legacy patches)
 
 - `d3d_execute_buffer_execute` = `sub_10015880(buffer, device)` (cdecl); opcode jump table at 0x100465b0. Locals:
   `[ebp-0xc4]` instruction data, `[ebp-0xc0]` element size, `edi` count.
@@ -142,4 +161,4 @@ for plain 16 bpp video textures so a Lock pointer stays valid).
   surfaces) and `surface_cpu_blt Filter LINEAR not supported`.
 - Why the medic's frame index is out of range at 0 HP (the crash itself is fixed, see §3).
 - No scaling or mouse confinement without gamescope.
-- Upstreaming patches 1–7 to Wine, or rebuilding ddraw from source (toolchain: clang + lld-link, or mingw).
+- Upstreaming the patches to Wine (see `patches/`; 0001, 0002, 0003, 0006 are the strongest candidates).

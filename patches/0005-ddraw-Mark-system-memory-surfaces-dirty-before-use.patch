@@ -1,0 +1,81 @@
+Subject: [PATCH] ddraw: Mark system memory surfaces dirty before they are used.
+
+Some applications Lock() a system memory surface once, keep the pointer, and keep
+writing through it. wined3d never sees those writes and keeps using stale copies
+of the surface. An empty Lock()/Unlock() pair before the surface is bound as a
+texture, or used as a Blt()/BltFast() source, makes the system memory copy current.
+---
+diff --git a/dlls/ddraw/ddraw_private.h b/dlls/ddraw/ddraw_private.h
+index 2f8d40f..04a7929 100644
+--- a/dlls/ddraw/ddraw_private.h
++++ b/dlls/ddraw/ddraw_private.h
+@@ -234,6 +234,7 @@ struct ddraw_texture
+ HRESULT ddraw_surface_create(struct ddraw *ddraw, const DDSURFACEDESC2 *surface_desc,
+         struct ddraw_surface **surface, IUnknown *outer_unknown, unsigned int version);
+ struct wined3d_rendertarget_view *ddraw_surface_get_rendertarget_view(struct ddraw_surface *surface);
++void ddraw_surface_mark_sysmem_dirty(struct ddraw_surface *surface, DWORD caps_mask);
+ HRESULT ddraw_surface_update_frontbuffer(struct ddraw_surface *surface,
+         const RECT *rect, BOOL read, unsigned int swap_interval);
+ 
+diff --git a/dlls/ddraw/device.c b/dlls/ddraw/device.c
+index b32d839..33ddfef 100644
+--- a/dlls/ddraw/device.c
++++ b/dlls/ddraw/device.c
+@@ -2780,6 +2780,7 @@ static HRESULT WINAPI d3d_device3_SetRenderState(IDirect3DDevice3 *iface,
+                 break;
+             }
+ 
++            ddraw_surface_mark_sysmem_dirty(surf, DDSCAPS_SYSTEMMEMORY | DDSCAPS_TEXTURE);
+             hr = IDirect3DDevice3_SetTexture(iface, 0, &surf->IDirect3DTexture2_iface);
+             break;
+         }
+diff --git a/dlls/ddraw/surface.c b/dlls/ddraw/surface.c
+index 5369b2d..f2a5b2e 100644
+--- a/dlls/ddraw/surface.c
++++ b/dlls/ddraw/surface.c
+@@ -1547,6 +1547,27 @@ static HRESULT WINAPI DECLSPEC_HOTPATCH ddraw_surface2_Flip(IDirectDrawSurface2
+             src_impl ? &src_impl->IDirectDrawSurface_iface : NULL, flags);
+ }
+ 
++/* Some applications Lock() a system memory surface once, keep the returned
++ * pointer, and keep writing to the surface through it without locking it
++ * again. wined3d does not see those writes and keeps using stale copies of the
++ * surface in other locations. An empty Lock() / Unlock() pair marks the system
++ * memory copy as the current one, so it is uploaded again when the surface is
++ * next used by the GPU. */
++void ddraw_surface_mark_sysmem_dirty(struct ddraw_surface *surface, DWORD caps_mask)
++{
++    struct wined3d_resource *resource;
++    struct wined3d_map_desc map_desc;
++
++    if (!(surface->surface_desc.ddsCaps.dwCaps & caps_mask))
++        return;
++
++    wined3d_mutex_lock();
++    resource = wined3d_texture_get_resource(ddraw_surface_get_default_texture(surface, DDRAW_SURFACE_RW));
++    if (SUCCEEDED(wined3d_resource_map(resource, surface->sub_resource_idx, &map_desc, NULL, 0)))
++        wined3d_resource_unmap(resource, surface->sub_resource_idx);
++    wined3d_mutex_unlock();
++}
++
+ static HRESULT ddraw_surface_blt(struct ddraw_surface *dst_surface, const RECT *dst_rect,
+         struct ddraw_surface *src_surface, const RECT *src_rect, DWORD flags, DWORD fill_colour,
+         const struct wined3d_blt_fx *fx, enum wined3d_texture_filter_type filter)
+@@ -1601,6 +1622,8 @@ static HRESULT ddraw_surface_blt(struct ddraw_surface *dst_surface, const RECT *
+         return E_NOTIMPL;
+     }
+ 
++    ddraw_surface_mark_sysmem_dirty(src_surface, DDSCAPS_SYSTEMMEMORY);
++
+     if (!(flags & DDBLT_ASYNC))
+         wined3d_flags |= WINED3D_BLT_SYNCHRONOUS;
+ 
+@@ -4466,6 +4489,8 @@ static HRESULT WINAPI DECLSPEC_HOTPATCH ddraw_surface7_BltFast(IDirectDrawSurfac
+     if (trans & DDBLTFAST_DONOTWAIT)
+         flags |= WINED3D_BLT_DO_NOT_WAIT;
+ 
++    ddraw_surface_mark_sysmem_dirty(src_impl, DDSCAPS_SYSTEMMEMORY);
++
+     wined3d_mutex_lock();
+     if (dst_impl->clipper)
+     {

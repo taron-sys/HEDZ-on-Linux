@@ -1,0 +1,51 @@
+Subject: [PATCH] ddraw: Initialize map boxes with a non-empty height and depth.
+
+wined3d_resource_map() validates the box with wined3d_resource_check_box_dimensions(),
+which rejects an empty top/bottom or front/back range. The execute buffer and
+vertex buffer code mapped buffers with an all-zero y/z range, flooding the log
+with "Box ... is invalid" warnings and failing the maps.
+---
+diff --git a/dlls/ddraw/device.c b/dlls/ddraw/device.c
+index 9882c26..6c2fdfb 100644
+--- a/dlls/ddraw/device.c
++++ b/dlls/ddraw/device.c
+@@ -4143,7 +4143,7 @@ static HRESULT d3d_device7_DrawPrimitiveVB(IDirect3DDevice7 *iface, D3DPRIMITIVE
+     struct d3d_vertex_buffer *vb_impl = unsafe_impl_from_IDirect3DVertexBuffer7(vb);
+     struct wined3d_resource *wined3d_resource;
+     struct wined3d_map_desc wined3d_map_desc;
+-    struct wined3d_box wined3d_box = {0};
++    struct wined3d_box wined3d_box = {0, 0, 0, 1, 0, 1};
+     DWORD stride;
+     HRESULT hr;
+ 
+@@ -4261,7 +4261,7 @@ static HRESULT d3d_device7_DrawIndexedPrimitiveVB(IDirect3DDevice7 *iface,
+     DWORD stride = get_flexible_vertex_size(vb_impl->fvf);
+     struct wined3d_resource *wined3d_resource;
+     struct wined3d_map_desc wined3d_map_desc;
+-    struct wined3d_box wined3d_box = {0};
++    struct wined3d_box wined3d_box = {0, 0, 0, 1, 0, 1};
+     HRESULT hr;
+     UINT ib_pos;
+ 
+diff --git a/dlls/ddraw/executebuffer.c b/dlls/ddraw/executebuffer.c
+index 84bf091..8c3cdaf 100644
+--- a/dlls/ddraw/executebuffer.c
++++ b/dlls/ddraw/executebuffer.c
+@@ -51,7 +51,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+     char *instr = (char *)buffer->desc.lpData + is;
+     unsigned int i, primitive_size;
+     struct wined3d_map_desc map_desc;
+-    struct wined3d_box box = {0};
++    struct wined3d_box box = {0, 0, 0, 1, 0, 1};
+     HRESULT hr;
+ 
+     TRACE("ExecuteData :\n");
+@@ -580,7 +580,7 @@ static HRESULT WINAPI d3d_execute_buffer_SetExecuteData(IDirect3DExecuteBuffer *
+ {
+     struct d3d_execute_buffer *buffer = impl_from_IDirect3DExecuteBuffer(iface);
+     struct wined3d_map_desc map_desc;
+-    struct wined3d_box box = {0};
++    struct wined3d_box box = {0, 0, 0, 1, 0, 1};
+     HRESULT hr;
+     DWORD buf_size = buffer->desc.dwBufferSize, copy_size;
+ 
