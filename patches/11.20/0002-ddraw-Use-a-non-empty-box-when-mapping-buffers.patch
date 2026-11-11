@@ -1,0 +1,47 @@
+Subject: [PATCH] ddraw: Initialize map boxes with a non-empty height and depth.
+
+wined3d_resource_map() validates the box with wined3d_resource_check_box_dimensions(),
+which rejects an empty top/bottom or front/back range. The execute buffer and
+vertex buffer code mapped buffers with an all-zero y/z range, flooding the log
+with "Box ... is invalid" warnings and failing the maps.
+---
+--- a/dlls/ddraw/device.c
++++ b/dlls/ddraw/device.c
+@@ -4143,7 +4143,7 @@
+     struct d3d_vertex_buffer *vb_impl = unsafe_impl_from_IDirect3DVertexBuffer7(vb);
+     struct wined3d_resource *wined3d_resource;
+     struct wined3d_map_desc wined3d_map_desc;
+-    struct wined3d_box wined3d_box = {0};
++    struct wined3d_box wined3d_box = {0, 0, 0, 1, 0, 1};
+     DWORD stride;
+     HRESULT hr;
+ 
+@@ -4261,7 +4261,7 @@
+     DWORD stride = get_flexible_vertex_size(vb_impl->fvf);
+     struct wined3d_resource *wined3d_resource;
+     struct wined3d_map_desc wined3d_map_desc;
+-    struct wined3d_box wined3d_box = {0};
++    struct wined3d_box wined3d_box = {0, 0, 0, 1, 0, 1};
+     HRESULT hr;
+     UINT ib_pos;
+ 
+--- a/dlls/ddraw/executebuffer.c
++++ b/dlls/ddraw/executebuffer.c
+@@ -94,7 +94,7 @@
+     DWORD buf_size = buffer->desc.dwBufferSize;
+     DWORD vertex_offset = buffer->data.dwVertexOffset;
+     struct wined3d_map_desc map_desc;
+-    struct wined3d_box box = {0};
++    struct wined3d_box box = {0, 0, 0, 1, 0, 1};
+     unsigned int vertex_count;
+     HRESULT hr;
+ 
+@@ -162,7 +162,7 @@
+     char *instr = (char *)buffer->desc.lpData + is;
+     unsigned int i, primitive_size;
+     struct wined3d_map_desc map_desc;
+-    struct wined3d_box box = {0};
++    struct wined3d_box box = {0, 0, 0, 1, 0, 1};
+     HRESULT hr;
+ 
+     TRACE("ExecuteData :\n");

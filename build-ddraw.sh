@@ -16,8 +16,8 @@ die() { echo "error: $*" >&2; exit 1; }
 VER="${HEDZ_WINE_VERSION:-$(wine --version 2>/dev/null | sed -n 's/^wine-\([0-9.]*[0-9]\).*/\1/p')}"
 [ -n "$VER" ] || die "cannot determine the Wine version (is wine installed?)"
 case "$VER" in
-  11.0|11.0.*) ;;
-  *) echo "warning: the patches were written and tested against wine-11.0; building for $VER may fail to apply or misbehave." >&2 ;;
+  11.0|11.0.*|11.20) ;;
+  *) echo "warning: the patches were written and tested against wine-11.0 and 11.20; building for $VER may fail to apply or misbehave." >&2 ;;
 esac
 # stable releases live in <major>.0/, development releases in <major>.x/
 case "$VER" in *.0|*.0.*) DIR="${VER%%.*}.0" ;; *) DIR="${VER%%.*}.x" ;; esac
@@ -34,7 +34,8 @@ echo "== extracting and patching"
 SRC="$CACHE/src-$VER"
 rm -rf "$SRC"; mkdir -p "$SRC"
 tar -xf "$TAR" -C "$SRC" --strip-components=1
-for p in "$HERE"/patches/*.patch; do
+PDIR="$HERE/patches"; [ -d "$PDIR/$VER" ] && PDIR="$PDIR/$VER"   # per-version patch set, if there is one
+for p in "$PDIR"/*.patch; do
   ( cd "$SRC" && patch -p1 --silent < "$p" ) || die "$(basename "$p") does not apply to wine-$VER"
 done
 
